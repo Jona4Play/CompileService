@@ -27,10 +27,10 @@ public class Container
 		}
 	}
 
-	public Container(LxdClient client, string imageName)
+	public Container(LxdClient client, string imageAlias)
 	{
 		_id = Guid.NewGuid();
-		_image = imageName;
+		_image = imageAlias;
 		_client = client;
 		var response = CreateContainer().Result;
 
@@ -103,7 +103,7 @@ public class Container
 		var startInfo = new ProcessStartInfo
 		{
 			FileName = "lxc",
-			Arguments = $"exec {_id} -- {command}",
+			Arguments = $"exec {_id} -- {command}", 
 			RedirectStandardOutput = true
 		};
 

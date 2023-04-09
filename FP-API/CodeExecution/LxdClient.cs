@@ -16,9 +16,9 @@ using System.Collections;
 public class LxdClient : IDisposable
 {
 	private readonly HttpClient _client;
-	private const string _defaultimage = "alpine/3.15";
+	private const string _defaultimage = "alpine/3.17";
 	private readonly List<Container> _containers = new List<Container>();
-	
+	private List<LangInfo> _langs = new List<LangInfo>();
 	public List<Container> Containers
 	{
 		get { return _containers; }
@@ -78,6 +78,13 @@ public class LxdClient : IDisposable
 		var response = await SendRequest(request);
 		return ((JArray)JObject.Parse(await response.Content.ReadAsStringAsync())["metadata"]).ToObject<string[]>().Select(x => x.Split("/").Last()).ToArray();
 	}
+	/// <summary>
+	/// Fetch a list of supported languages from GitHub and parse it into the LangInfo struct
+	/// </summary>
+	private static List<LangInfo> InitLangs()
+	{
+		
+	}
 
 	public void Dispose()
 	{
@@ -87,4 +94,11 @@ public class LxdClient : IDisposable
 		}
 		_client.Dispose();
 	}
+}
+
+public ref struct LangInfo
+{
+	ReadOnlySpan<char> language;
+	ReadOnlySpan<char> compileCommand;
+	ReadOnlySpan<char> fileEnding;
 }

@@ -1,0 +1,39 @@
+{
+	"languages": [
+		{
+			"name": "fsharp",
+			"ending": "fsx",
+			"compileCommand": "dotnet fsi"
+		},
+		{
+			"name": "clojure",
+			"ending": "clj",
+			"compileCommand": "clj"
+		},
+		{
+			"name": "haskell",
+			"ending": "hs",
+			"compileCommand": "runghc"
+		},
+		{
+			"name": "elixir",
+			"ending": "exs",
+			"compileCommand": "elixir"
+		},
+		{
+			"name": "scala",
+			"ending": "scala",
+			"compileCommand": "scala"
+		},
+		{
+			"name": "erlang",
+			"ending": "erl",
+			"compileCommand": "erl"
+		},
+		{
+			"name": "ocaml",
+			"ending": "ml",
+			"compileCommand": "ocaml"
+		}
+	]
+}
