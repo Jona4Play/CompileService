@@ -2,7 +2,10 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
+using System.Linq.Expressions;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 
 /// <summary>
@@ -10,42 +13,116 @@ using System.Text;
 /// </summary>
 public class Container
 {
-	private LxdClient _client;
+	private LxdClient _lxdclient;
 
 	private bool _isRunning;
-	private Guid _id;
+
+	private string _id;
+
 	private string _image;
 	public bool Busy { get; private set; }
+	private string BasePath { get; } = "/usercode";
+	private CompileTask _task;
+	private bool _isIdle;
+
 	public bool IsRunning
 	{
 		get
 		{
 			var response = GetContainerState().Result;
-			Console.WriteLine(response);
-			JObject.Parse(response.Content.ReadAsStringAsync().Result);
-			return _isRunning;
+			var result = JObject.Parse(response.Content.ReadAsStringAsync().Result);
+			Console.WriteLine("Is running?: " + result);
+			if (result.ToString().Contains("404"))
+				return false;
+			var isRunning = result["metadata"]!["status"]!.ToString() == "Running";
+			Console.WriteLine(result["metadata"]!["status"]!.ToString());
+			return isRunning;
 		}
 	}
 
+	public Container(LxdClient client, string imageAlias, CompileTask task)
+	{
+		_id = "fv" + Guid.NewGuid().ToString();
+		_image = imageAlias;
+		_lxdclient = client;
+		var response = CreateContainer().Result;
+		_task = task;
+		if (!response.IsSuccessStatusCode)
+			throw new Exception("Something went wrong while creation: " + response.Content.ReadAsStringAsync().Result);
+	}
 	public Container(LxdClient client, string imageAlias)
 	{
-		_id = Guid.NewGuid();
+		_id = "fv" + Guid.NewGuid().ToString();
 		_image = imageAlias;
-		_client = client;
+		_lxdclient = client;
 		var response = CreateContainer().Result;
+		_isIdle = true;
+		if (!response.IsSuccessStatusCode)
+			throw new Exception("Something went wrong while creation: " + response.Content.ReadAsStringAsync().Result);
+	}
 
-		_isRunning = response.IsSuccessStatusCode ? true : throw new Exception("Something went wrong while creation: " + response.Content.ReadAsStringAsync().Result);
-	}
-	public void Destroy()
-	{
-		_client.Containers.Remove(this);
-	}
 
 	public async Task<HttpResponseMessage> CreateContainer()
 	{
-		var request = new HttpRequestMessage(HttpMethod.Post, "/1.0/containers");
+		var request = new HttpRequestMessage(HttpMethod.Post, "/1.0/instances");
 		request.Content = new StringContent($"{{\"name\":\"{_id}\",\"source\":{{\"type\":\"image\",\"alias\":\"{_image}\"}}}}", Encoding.UTF8, "application/json");
-		return await _client.SendRequest(request);
+		var response = await _lxdclient.SendRequest(request);
+		var operationtype = JObject.Parse(await response.Content.ReadAsStringAsync())["status"];
+		if (operationtype == null || !operationtype.ToString().StartsWith("Operation"))
+		{
+			return response;
+		}
+		while (true)
+		{
+			StartContainer();
+			var containerState = await GetContainerState();
+			System.Console.WriteLine(containerState);
+			var containerJSON = JObject.Parse(await containerState.Content.ReadAsStringAsync());
+			System.Console.WriteLine(containerJSON);
+			try
+			{
+				var state = containerJSON["metadata"]!["status"]!.ToString();
+				if (state == "Running")
+				{
+					return containerState;
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Console.WriteLine(ex.Message);
+			}
+
+
+			await Task.Delay(1000);
+		}
+	}
+	public async Task<bool> Destroy()
+	{
+		var response = await DeleteContainer();
+		if (!response.IsSuccessStatusCode)
+			throw new Exception($"Something went wrong: {response.Content.ReadAsStringAsync().Result}");
+		Console.WriteLine(await response.Content.ReadAsStringAsync());
+		return true;
+	}
+
+	public void QueueTask(CompileTask compileTask)
+	{
+		_task = compileTask;
+	}
+
+
+	/// <summary>
+	/// Starts up the container over the CLI
+	/// </summary>
+	public void StartContainer()
+	{
+		if (IsRunning)
+			throw new Exception("Container is running");
+		var startProcess = new Process();
+		startProcess.StartInfo.FileName = "lxc";
+		startProcess.StartInfo.Arguments = $"start {_id}";
+		startProcess.Start();
+		startProcess.WaitForExit();
 	}
 
 	/// <summary>
@@ -53,10 +130,12 @@ public class Container
 	/// </summary>
 	/// <param name="containerName">Name of the container to delete</param>
 	/// <returns>Returns HTTP response</returns>
-	public async Task<HttpResponseMessage> DeleteContainer()
+	private async Task<HttpResponseMessage> DeleteContainer()
 	{
-		var request = new HttpRequestMessage(HttpMethod.Delete, $"/1.0/containers/{_id}");
-		return await _client.SendRequest(request);
+		if (IsRunning)
+			StopContainer();
+		var request = new HttpRequestMessage(HttpMethod.Delete, $"/1.0/instances/{_id}");
+		return await _lxdclient.SendRequest(request);
 	}
 
 	/// <summary>
@@ -66,8 +145,23 @@ public class Container
 	/// <returns></returns>
 	private async Task<HttpResponseMessage> GetContainerState()
 	{
-		var request = new HttpRequestMessage(HttpMethod.Get, $"/1.0/containers/{_id}/state");
-		return await _client.SendRequest(request);
+		var request = new HttpRequestMessage(HttpMethod.Get, $"/1.0/instances/{_id}/state");
+		return await _lxdclient.SendRequest(request);
+	}
+
+	public void CreateFileInContainer(CompileTask compileTask)
+	{
+		var path = $"{BasePath}.{compileTask.LanguageInfo.ending}";
+		var process = new Process();
+		process.StartInfo.FileName = "lxc";
+		process.StartInfo.Arguments = $"exec {_id} -- touch {path}";
+		process.Start();
+		process.WaitForExit();
+
+		using (var streamWriter = new StreamWriter($"lxc:{_id}:{path}"))
+		{
+			streamWriter.Write(compileTask.code);
+		}
 	}
 
 	/// <summary>
@@ -75,57 +169,88 @@ public class Container
 	/// </summary>
 	/// <param name="containerName">Name of the container to stop</param>
 	/// <returns>Returns true on successful stop, otherwise false</returns>
-	public async Task<bool> StopContainer()
+	public void StopContainer()
 	{
-		var state = await GetContainerState();
-		Console.WriteLine(await state.Content.ReadAsStringAsync());
-		if (state.StatusCode is not HttpStatusCode.OK)
-			return false;
-
-		var request = new HttpRequestMessage(HttpMethod.Put, $"1.0/containers/{_id}/state");
-		var requestBody = new
-		{
-			action = "stop",
-			timeout = 30
-		};
-		var json = JsonConvert.SerializeObject(requestBody);
-		request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-		var reqResponse = await _client.SendRequest(request);
-		if (reqResponse.StatusCode == HttpStatusCode.OK)
-			return true;
-		else
-			Console.WriteLine(await reqResponse.Content.ReadAsStringAsync());
-		return false;
+		if (!IsRunning)
+			throw new Exception("Container is not running");
+		var stopProcess = new Process();
+		stopProcess.StartInfo.FileName = "lxc";
+		stopProcess.StartInfo.Arguments = $"stop {_id}";
+		stopProcess.Start();
+		stopProcess.WaitForExit();
 	}
 
-	public async Task<(string output, double cpuUsage, double memoryUsage)> RunCommand(string command)
+
+	private async Task<bool> CreateFile()
 	{
-		var startInfo = new ProcessStartInfo
+		try
 		{
-			FileName = "lxc",
-			Arguments = $"exec {_id} -- {command}", 
-			RedirectStandardOutput = true
-		};
-
-		var process = new Process { StartInfo = startInfo };
-		var stopwatch = new Stopwatch();
-
-		stopwatch.Start();
-		process.Start();
-		var output = await process.StandardOutput.ReadToEndAsync();
-		process.WaitForExit();
-		stopwatch.Stop();
-
-		var cpuUsage = process.TotalProcessorTime.TotalMilliseconds;
-		var memoryUsage = process.WorkingSet64;
-
-		return (output, cpuUsage, memoryUsage);
+			var request = new HttpRequestMessage
+			{
+				Method = HttpMethod.Post,
+				RequestUri = new Uri($"/1.0/instances/{_id}/console"),
+				Headers =
+			{
+				{ "User-Agent", "LXD-Client" },
+				{ "X-LXD-Interactive", "true" },
+				{ "X-LXD-Type", "control" }
+			},
+				Content = new StringContent($"echo '{_task.code}' > /home/task.{_task.LanguageInfo.ending}\nexit\n")
+				{
+					Headers =
+					{
+						ContentType = MediaTypeHeaderValue.Parse("text/plain")
+					}
+				}
+			};
+			var response = await _lxdclient.SendRequest(request);
+			return response.IsSuccessStatusCode;
+		}
+		catch (Exception ex)
+		{
+			throw new Exception("Something went wrong during the creation of the temp file:" + ex.Message);
+		}
 	}
-
-	~Container()
+	private async Task<bool> DeleteTask()
 	{
-		var response = DeleteContainer().Result;
-		if (!response.IsSuccessStatusCode)
-			throw new Exception($"Something went wrong: {response.Content.ReadAsStringAsync().Result}");
+		try
+		{
+			var request = new HttpRequestMessage
+			{
+				Method = HttpMethod.Post,
+				RequestUri = new Uri($"/1.0/instances/{_id}/console"),
+				Headers =
+				{
+					{ "User-Agent", "LXD-Client" },
+					{ "X-LXD-Interactive", "true" },
+					{ "X-LXD-Type", "control" }
+				},
+				Content = new StringContent($"rm /home/task.{_task.LanguageInfo.ending}\nexit\n")
+				{
+					Headers =
+					{
+						ContentType = MediaTypeHeaderValue.Parse("text/plain")
+					}
+				}
+			};
+			return (await _lxdclient.SendRequest(request)).IsSuccessStatusCode;
+		}
+		catch (Exception ex)
+		{
+			throw new Exception("Something went wrong during the deletion of the temp file:" + ex.Message);
+		}
+	}
+	public async Task<CompileResult> Compile()
+	{
+
+		if (await CreateFile())
+		{
+			if (_isIdle)
+			{
+				await DeleteTask();
+			}
+
+		}
+		throw new Exception("Something went wrong while compiling");
 	}
 }

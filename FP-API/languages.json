@@ -34,6 +34,11 @@
 			"name": "ocaml",
 			"ending": "ml",
 			"compileCommand": "ocaml"
+		},
+		{
+			"name": "python",
+			"ending": "py",
+			"compileCommand": "python"
 		}
 	]
 }
